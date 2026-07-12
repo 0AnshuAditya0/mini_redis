@@ -14,17 +14,8 @@ durability.
 
 ## Status
 
-🚧 Early development — currently setting up the TCP server and build
+Early development — currently setting up the TCP server and build
 system. Core KV logic, RESP parsing, and persistence are in progress.
-
-## Planned features
-
-- [ ] TCP server (raw POSIX sockets)
-- [ ] In-memory key-value store (`GET`, `SET`, `DEL`, `EXPIRE`, `TTL`)
-- [ ] RESP protocol support (compatible with `redis-cli`)
-- [ ] Append-only file (AOF) persistence with crash recovery
-- [ ] Concurrency handling for multiple simultaneous clients
-- [ ] Load testing and throughput benchmarks
 
 ## Build
 
