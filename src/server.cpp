@@ -1,6 +1,7 @@
 #include "server.hpp"
 #include <iostream>
 #include <cstring>
+#include <thread>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -16,20 +17,21 @@ std::string Server::encode_resp_array(const std::vector<std::string>& tokens) {
 }
 
 void Server::append_to_aof(const std::vector<std::string>& tokens) {
+    std::lock_guard<std::mutex> lock(aof_mutex_);
     aof_file_ << encode_resp_array(tokens);
-    aof_file_.flush(); // ensure it hits disk, not just libc buffer
+    aof_file_.flush();
 }
 
 void Server::load_aof() {
     std::ifstream in(aof_path_);
-    if (!in.is_open()) return; // no AOF yet, fine on first run
+    if (!in.is_open()) return;
 
     std::string buffer((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
 
     int replayed = 0;
     while (auto tokens = parse_resp_command(buffer)) {
-        handle_command(*tokens, /*from_aof=*/true);
+        handle_command(*tokens, true);
         replayed++;
     }
     std::cout << "Replayed " << replayed << " commands from AOF\n";
@@ -44,7 +46,7 @@ std::string Server::handle_command(const std::vector<std::string>& tokens, bool 
     if (cmd == "SET") {
         if (tokens.size() != 3) return resp_error("ERR wrong number of arguments for 'set'");
         store_.set(tokens[1], tokens[2]);
-        if (!from_aof) append_to_aof(tokens); // only log real client writes, not replayed ones
+        if (!from_aof) append_to_aof(tokens);
         return resp_simple_string("OK");
     } else if (cmd == "GET") {
         if (tokens.size() != 2) return resp_error("ERR wrong number of arguments for 'get'");
@@ -63,10 +65,32 @@ std::string Server::handle_command(const std::vector<std::string>& tokens, bool 
     }
 }
 
-void Server::run() {
-    load_aof(); // rebuild state from disk before accepting any connections
+void Server::handle_client(int client_fd) {
+    std::cout << "Client connected (thread " << std::this_thread::get_id() << ")\n";
 
-    aof_file_.open(aof_path_, std::ios::app); // append mode, keep open for the server's lifetime
+    std::string buffer;
+    char chunk[1024];
+    while (true) {
+        ssize_t bytes_read = read(client_fd, chunk, sizeof(chunk));
+        if (bytes_read <= 0) {
+            std::cout << "Client disconnected\n";
+            break;
+        }
+        buffer.append(chunk, bytes_read);
+
+        while (auto tokens = parse_resp_command(buffer)) {
+            std::string response = handle_command(*tokens);
+            write(client_fd, response.c_str(), response.size());
+        }
+    }
+
+    close(client_fd);
+}
+
+void Server::run() {
+    load_aof();
+
+    aof_file_.open(aof_path_, std::ios::app);
     if (!aof_file_.is_open()) {
         std::cerr << "Failed to open AOF file for writing\n";
         return;
@@ -107,24 +131,7 @@ void Server::run() {
             continue;
         }
 
-        std::cout << "Client connected\n";
-
-        std::string buffer;
-        char chunk[1024];
-        while (true) {
-            ssize_t bytes_read = read(client_fd, chunk, sizeof(chunk));
-            if (bytes_read <= 0) {
-                std::cout << "Client disconnected\n";
-                break;
-            }
-            buffer.append(chunk, bytes_read);
-
-            while (auto tokens = parse_resp_command(buffer)) {
-                std::string response = handle_command(*tokens);
-                write(client_fd, response.c_str(), response.size());
-            }
-        }
-
-        close(client_fd);
+        // Spawn a thread per client, detach it — it cleans itself up on disconnect
+        std::thread(&Server::handle_client, this, client_fd).detach();
     }
 }
