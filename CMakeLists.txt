@@ -8,6 +8,7 @@ add_executable(mini_redis
     src/main.cpp
     src/server.cpp
     src/store.cpp
+    src/resp.cpp
 )
 
 target_include_directories(mini_redis PRIVATE src)

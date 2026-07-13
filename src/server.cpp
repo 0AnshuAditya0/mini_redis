@@ -1,6 +1,5 @@
 #include "server.hpp"
 #include <iostream>
-#include <sstream>
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -8,32 +7,29 @@
 
 Server::Server(int port) : port_(port), server_fd_(-1) {}
 
-std::string Server::handle_command(const std::string& line) {
-    std::istringstream iss(line);
-    std::string cmd;
-    iss >> cmd;
+std::string Server::handle_command(const std::vector<std::string>& tokens) {
+    if (tokens.empty()) return resp_error("ERR empty command");
+
+    std::string cmd = tokens[0];
+    for (auto& c : cmd) c = toupper(c);
 
     if (cmd == "SET") {
-        std::string key, value;
-        iss >> key >> value;
-        if (key.empty() || value.empty()) return "ERR wrong number of arguments\n";
-        store_.set(key, value);
-        return "OK\n";
+        if (tokens.size() != 3) return resp_error("ERR wrong number of arguments for 'set'");
+        store_.set(tokens[1], tokens[2]);
+        return resp_simple_string("OK");
     } else if (cmd == "GET") {
-        std::string key;
-        iss >> key;
-        if (key.empty()) return "ERR wrong number of arguments\n";
-        auto val = store_.get(key);
-        if (!val) return "(nil)\n";
-        return *val + "\n";
+        if (tokens.size() != 2) return resp_error("ERR wrong number of arguments for 'get'");
+        auto val = store_.get(tokens[1]);
+        if (!val) return resp_nil();
+        return resp_bulk_string(*val);
     } else if (cmd == "DEL") {
-        std::string key;
-        iss >> key;
-        if (key.empty()) return "ERR wrong number of arguments\n";
-        bool deleted = store_.del(key);
-        return (deleted ? "1" : "0") + std::string("\n");
+        if (tokens.size() != 2) return resp_error("ERR wrong number of arguments for 'del'");
+        bool deleted = store_.del(tokens[1]);
+        return resp_integer(deleted ? 1 : 0);
+    } else if (cmd == "PING") {
+        return resp_simple_string("PONG");
     } else {
-        return "ERR unknown command\n";
+        return resp_error("ERR unknown command '" + cmd + "'");
     }
 }
 
@@ -75,24 +71,19 @@ void Server::run() {
 
         std::cout << "Client connected\n";
 
-        std::string leftover;
-        char buffer[1024];
+        std::string buffer;
+        char chunk[1024];
         while (true) {
-            ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+            ssize_t bytes_read = read(client_fd, chunk, sizeof(chunk));
             if (bytes_read <= 0) {
                 std::cout << "Client disconnected\n";
                 break;
             }
-            buffer[bytes_read] = '\0';
-            leftover += buffer;
+            buffer.append(chunk, bytes_read);
 
-            size_t pos;
-            while ((pos = leftover.find('\n')) != std::string::npos) {
-                std::string line = leftover.substr(0, pos);
-                if (!line.empty() && line.back() == '\r') line.pop_back(); // handle CRLF
-                leftover.erase(0, pos + 1);
-
-                std::string response = handle_command(line);
+            // Keep parsing as many complete commands as are in the buffer
+            while (auto tokens = parse_resp_command(buffer)) {
+                std::string response = handle_command(*tokens);
                 write(client_fd, response.c_str(), response.size());
             }
         }
